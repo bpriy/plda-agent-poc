@@ -6,6 +6,9 @@ import requests
 import time
 from groq import Groq
 
+# ==========================================
+# CORE API WRAPPERS
+# ==========================================
 def generate_with_retry(client, prompt_text, max_retries=3):
     """A fault-tolerant wrapper that calls Groq's Llama 3 model."""
     for attempt in range(max_retries):
@@ -67,17 +70,86 @@ def analyze_results(client, issue_body, results_path):
         "You are an objective, rigorous academic statistician, peer reviewer, and expert in record linkage, post-linkage data analysis, and the postlink R package. Analyze these simulation results "
         "for a Record Linkage adjustment model (postlink package).\n\n"
         f"USER'S ORIGINAL INTENT:\n{issue_body}\n\n"
-        f"ACTUAL SIMULATION RESULTS:\n{results_table}\n\n"
+        f"ACTUAL SIMULATION RESULTS (Sensitivity Sweep):\n{results_table}\n\n"
         "TASK:\n"
         "Write a 3-paragraph, mathematically rigorous summary for a Pull Request body.\n"
-        "1. BIAS & ATTENUATION: Compare point estimates. Did the Naive model exhibit attenuation bias (shrinkage toward zero)? Did the Adjusted model correct the direction of this bias?\n"
-        "2. UNCERTAINTY & COVERAGE: Do NOT just look at point estimates. You must consider the Standard Errors. Evaluate if the Oracle estimate falls within the roughly 95% Confidence Interval (Estimate +/- 1.96 * SE) of the Adjusted model. Explicitly state that EM mixture adjustments theoretically inflate standard errors due to the propagation of latent linkage uncertainty.\n"
-        "3. THEORETICAL CONCLUSION: Connect the massive variance inflation directly to the user's DGP (e.g., highly overlapping Beta distributions for paradata). Suggest rigorous next steps (e.g., increasing N, using stronger paradata).\n"
+        "1. BIAS & ATTENUATION: Compare point estimates across the different mismatch rates. Did the Naive model exhibit worsening attenuation bias as error rates increased? Did the Adjusted model correct it?\n"
+        "2. UNCERTAINTY & COVERAGE: Evaluate standard errors. State explicitly that EM mixture adjustments theoretically inflate standard errors due to the propagation of latent linkage uncertainty.\n"
+        "3. THEORETICAL CONCLUSION: Connect the variance inflation directly to the user's DGP. Evaluate the package's boundary performance at the highest mismatch rate.\n"
         "Output ONLY the text for the PR body."
     )
-    
     return generate_with_retry(client, prompt)
+
+# ==========================================
+# THE AGENTIC COUNCIL (Highest Level Logic)
+# ==========================================
+def conduct_council(client, issue_body, system_knowledge):
+    """Orchestrates the three-agent deliberation loop."""
     
+    # --- PHASE 1: THE ARCHITECT ---
+    architect_prompt = (
+        "You are the Lead PhD Statistician. Design a rigorous simulation plan for this request:\n"
+        f"ISSUE: {issue_body}\n\n"
+        "REQUIREMENTS:\n"
+        "1. Identify the outcome type and select the appropriate GLM family (e.g., gaussian, binomial, poisson).\n"
+        "2. Define the Causal DAG (Covariates -> True Outcome -> Match Status -> Paradata).\n"
+        "3. Plan a Sensitivity Sweep: We must test mismatch rates of 0.1, 0.3, and 0.5 in a loop.\n"
+        "4. Define the outcome corruption (Random Swap within the mismatched subset).\n"
+        "Return ONLY the statistical design plan."
+    )
+    plan = generate_with_retry(client, architect_prompt + system_knowledge)
+
+    # --- PHASE 2: THE DEVELOPER ---
+    developer_prompt = (
+        "You are a Senior R Developer. Translate this statistical plan into a formal 'testthat' suite:\n"
+        f"PLAN: {plan}\n\n"
+        "CONSTRAINTS:\n"
+        "1. Wrap the logic in: test_that('Simulation Sweep', { ... })\n"
+        "2. Include 'set.seed(123)' and 'skip_on_cran()' inside the test block.\n"
+        "3. Loop through the sensitivity sweep (mismatch = 0.1, 0.3, 0.5).\n"
+        "4. NO CHEATING: Do not pass the true mismatch rate to adjMixture(). Let the EM estimate it.\n"
+        "5. EXTRACT: Use broom::tidy() to easily extract point estimates and standard errors for all models across all loops.\n"
+        "6. OUTPUT: Save a single cohesive Markdown table comparing the models at different mismatch rates to 'results.md' using writeLines(). Do not put a 'collapse' argument inside writeLines.\n"
+        "Return ONLY valid R code in a ```R block."
+    )
+    code_response = generate_with_retry(client, developer_prompt + system_knowledge)
+    code_match = re.search(r"```[Rr]\n(.*?)```", code_response, re.DOTALL)
+    code = code_match.group(1).strip() if code_match else code_response
+
+    # --- PHASE 3: THE CRITIC (Adversarial Loop) ---
+    critique = "PASSED"
+    for attempt in range(2):
+        critic_prompt = (
+            "You are a Skeptical Peer Reviewer evaluating an R simulation script.\n"
+            f"CODE:\n```R\n{code}\n```\n\n"
+            "CHECK FOR FATAL FLAWS:\n"
+            "1. DATA LEAKAGE: Is the true mismatch rate passed to the `m.rate` argument of adjMixture? (This is cheating).\n"
+            "2. CAUSALITY FAULT: Is 'jw_score' generated based on Disease_Status instead of Match_Status?\n"
+            "3. SYNTAX: Is `writeLines` used correctly without a `collapse` argument inside the function call itself?\n"
+            "4. COMPLETENESS: Does the script extract Standard Errors?\n"
+            "If the code is flawless, reply exactly with 'PASSED'. Otherwise, list the specific errors."
+        )
+        critique = generate_with_retry(client, critic_prompt)
+        
+        if "PASSED" in critique:
+            break
+        else:
+            # Re-run Developer to fix the code
+            fix_prompt = (
+                "You are a Senior R Developer. Fix your script based on this code review:\n"
+                f"ERRORS:\n{critique}\n\n"
+                f"ORIGINAL CODE:\n```R\n{code}\n```\n\n"
+                "Return ONLY the fixed R code in a ```R block."
+            )
+            code_response = generate_with_retry(client, fix_prompt)
+            code_match = re.search(r"```[Rr]\n(.*?)```", code_response, re.DOTALL)
+            code = code_match.group(1).strip() if code_match else code_response
+
+    return plan, critique, code
+
+# ==========================================
+# MAIN EXECUTION ROUTINE
+# ==========================================
 def main():
     groq_key = os.environ.get("GROQ_API_KEY")
     github_token = os.environ.get("GITHUB_TOKEN")
@@ -96,6 +168,9 @@ def main():
     issue_body = event_data['issue']['body']
     action = event_data.get('action')
 
+    # ---------------------------------------------------------
+    # JOB 3: PR ANALYSIS MODE
+    # ---------------------------------------------------------
     if "--analyze" in sys.argv:
         if not os.path.exists("results.md"):
             sys.exit(1)
@@ -106,17 +181,19 @@ def main():
         analysis = analyze_results(client, issue_body, "results.md")
         
         with open("pr_body.md", "w") as f:
-            f.write(f"## 📊 Empirical Analysis\n\n{analysis}\n\n### 📈 Simulation Results\n\n{results_table}\n\n**Linked Issue:** Closes #{issue_number}")
+            f.write(f"## 📊 Empirical Analysis\n\n{analysis}\n\n### 📈 Sensitivity Sweep Results\n\n{results_table}\n\n**Linked Issue:** Closes #{issue_number}")
             
         sys.exit(0)
         
-    system_knowledge = "\n### R PACKAGE DOCUMENTATION:\n"
+    # ---------------------------------------------------------
+    # KNOWLEDGE RETRIEVAL
+    # ---------------------------------------------------------
+    system_knowledge = "\n\n### SYSTEM CONTEXT (R Package Docs):\n"
     man_path = "man"
     
     potential_functions = re.findall(r'\b([a-zA-Z0-9_.]+)\s*\(', issue_body)
     potential_functions.append("adjMixture") 
     functions_to_lookup = list(set(potential_functions))
-    
     found_files = set() 
     
     if os.path.exists(man_path) and os.path.isdir(man_path):
@@ -131,116 +208,89 @@ def main():
                                 if filename not in found_files:
                                     system_knowledge += f"\n--- DOCS FROM {filename} ---\n{content}\n"
                                     found_files.add(filename)
-                                    print(f"Direct Hit: Loaded docs for {func} from {filename}")
                     except:
                         continue
         
         if not found_files:
-            print("No specific docs found. Loading package summary as fallback.")
             for filename in os.listdir(man_path):
                 if "package" in filename.lower():
                     with open(os.path.join(man_path, filename), "r", encoding="utf-8") as f:
                         system_knowledge += f.read()
                         break
-    else:
-        system_knowledge = ""
-        
+    
     url_pattern = r'(https://github\.com/[^\s)]+/(?:files|assets)/[^\s)]+)'
     file_urls = re.findall(url_pattern, str(issue_body))
-    
-    attached_content = ""
     if file_urls:
-        attached_content += "\n\n### SUPPLEMENTARY FILES PROVIDED BY HUMAN AUTHOR:\n"
+        system_knowledge += "\n\n### SUPPLEMENTARY FILES PROVIDED BY HUMAN:\n"
         for url in file_urls:
-            filename = url.split("/")[-1]
-            print(f"Downloading supplementary file: {filename}...")
             file_text = download_and_extract_text(url)
             if file_text:
-                attached_content += f"\n--- Content of {filename} ---\n{file_text}\n--- End of {filename} ---\n"
+                system_knowledge += f"\n--- Content of {url.split('/')[-1]} ---\n{file_text}\n"
 
+    # ---------------------------------------------------------
+    # STATE 3: EXECUTION MODE (/approve) & REVISION
+    # ---------------------------------------------------------
     if 'comment' in event_data and action == 'created':
         comment_body = event_data['comment']['body'].strip()
         if event_data['comment']['user']['login'] == 'github-actions[bot]': 
             sys.exit(0)
 
+        # TRIGGER BENCHMARK RUN
         if '/approve' in comment_body.lower():
             r_code = get_last_bot_code(repo, issue_number, github_token)
             
-            # THE FIX: Ensure we found valid R code and not our error placeholder
             if r_code and not r_code.startswith("# Error"):
-                os.makedirs("benchmarks", exist_ok=True)
-                file_name = f"benchmarks/simulation_issue_{issue_number}.R"
+                os.makedirs("tests/testthat", exist_ok=True)
+                file_name = f"tests/testthat/test-issue-{issue_number}.R"
                 with open(file_name, "w") as f: 
                     f.write(r_code)
                 sys.exit(0)
             
-            # If the code parsing failed previously, block approval and warn the user
-            error_msg = "🚨 **Agent Error:** I couldn't parse valid R code from my last message. Please reply asking me to revise and output the ENTIRE script in a standard ```R block."
+            error_msg = "🚨 **Agent Error:** I couldn't parse valid R code from my last message. Please ask me to revise."
             post_github_comment(repo, issue_number, github_token, error_msg)
             sys.exit(1)
         
+        # TRIGGER REVISION
         else:
             r_code = get_last_bot_code(repo, issue_number, github_token)
             if not r_code:
-                error_msg = "🚨 **Agent Error**: I couldn't find any previous R code to revise. Please make sure I've already posted a methodology review."
-                post_github_comment(repo, issue_number, github_token, error_msg)
+                post_github_comment(repo, issue_number, github_token, "🚨 I couldn't find previous R code to revise.")
                 sys.exit(1)
 
+            # Fast-track revision directly to Developer
             prompt_text = (
-                "You are an expert R developer. Here is the benchmark script you previously wrote:\n"
+                "You are an expert R developer. The user rejected your last testthat script:\n"
                 f"```R\n{r_code}\n```\n\n"
-                f"The human researcher ran the code and provided this feedback/error:\n{comment_body}\n\n"
-                "Revise the R script to fix this specific issue. \n"
-                "CRITICAL CONSTRAINTS:\n"
-                "1. You MUST output the ENTIRE, complete R script from start to finish. Do NOT output partial snippets or use placeholders like '# ... rest of code ...'.\n"
-                "2. CAUSAL DGP & CORRUPTION: First, simulate covariates and true outcome. Second, generate a 'true_match_status' vector. Third, generate paradata (jw_score) based ONLY on 'true_match_status'. Fourth, execute a Random Swap on the outcome variable ONLY for mismatched rows to induce attenuation bias.\n"
-                "3. NO CHEATING: Never pass the true 'm.rate' to adjMixture().\n"
-                "4. SYNTAX: plglm() must be called with 'data = linked_data' and 'adjustment = adj_object'.\n"
-                "5. TABLE OUTPUT: You MUST extract both Point Estimates and Standard Errors for all covariates (Intercept, BMI, Age). Save the Markdown table using writeLines(..., 'results.md') but NEVER put a 'collapse' argument inside writeLines.\n"
-                "6. Return ONLY valid R code inside ```R blocks."
+                f"USER FEEDBACK: {comment_body}\n\n"
+                "Fix the script. Ensure you output the ENTIRE script inside a ```R block."
             )
-            final_prompt = system_knowledge + prompt_text + attached_content
-            
-            response_text = generate_with_retry(client, final_prompt)
+            response_text = generate_with_retry(client, prompt_text + system_knowledge)
             code_match = re.search(r"```[Rr]\n(.*?)```", response_text, re.DOTALL)
             extracted_code = code_match.group(1).strip() if code_match else "# Error: Could not parse AI response."
             
             reply_body = (
                 "🤖 **Agent Checkpoint: Revision**\n\n"
-                "I have updated the code based on your feedback. Please review:\n\n"
+                "I have updated the code based on your feedback:\n\n"
                 f"```R\n{extracted_code}\n```\n\n"
-                "🛑 **Action Required:**\n"
-                "Reply `/approve` to run this benchmark."
+                "🛑 **Action Required:** Reply `/approve` to run this benchmark."
             )
             post_github_comment(repo, issue_number, github_token, reply_body)
             sys.exit(99) 
 
+    # ---------------------------------------------------------
+    # STATE 1: DRAFTING MODE (New Issue Opened)
+    # ---------------------------------------------------------
     elif action == 'opened':
-        prompt_text = (
-            "You are a rigorous statistician and R package developer for 'postlink'.\n"
-            f"A human researcher submitted this benchmark request:\n{issue_body}\n\n"
-            "CRITICAL STATISTICAL RULES YOU MUST FOLLOW:\n"
-            "1. CAUSAL DGP & CORRUPTION: First, simulate covariates and the true outcome. Second, generate a 'true_match_status' vector (1=True, 0=False). Third, generate paradata (jw_score) based ONLY on 'true_match_status', NOT the outcome. Fourth, copy 'oracle_data' to 'linked_data' and physically execute a Random Swap on the outcome variable ONLY for rows where true_match_status == 0.\n"
-            "2. MODEL SEPARATION: Fit the oracle model on 'oracle_data'. Fit the naive and adjusted models on 'linked_data'.\n"
-            "3. NO CHEATING: Never pass the true 'm.rate' to adjMixture(). Let the EM algorithm estimate it.\n"
-            "4. SYNTAX: plglm() must be called with 'data = linked_data' and 'adjustment = adj_object'.\n"
-            "5. TABLE OUTPUT: You MUST extract both Point Estimates and Standard Errors for all covariates. Save the Markdown table using writeLines(..., 'results.md') but NEVER put a 'collapse' argument inside writeLines.\n\n"
-            "Ensure you follow any methodology outlined in the supplementary files provided below.\n"
-            "Return ONLY valid R code inside ```R blocks."
-        )
-        final_prompt = system_knowledge + prompt_text + attached_content
+        plan, critique, code = conduct_council(client, issue_body, system_knowledge)
         
-        response_text = generate_with_retry(client, final_prompt)
-        code_match = re.search(r"```[Rr]\n(.*?)```", response_text, re.DOTALL)
-        extracted_code = code_match.group(1).strip() if code_match else "# Error: Could not parse AI response."
-            
         reply_body = (
-            "🤖 **Agent Checkpoint: Methodology Review**\n\n"
-            "I have designed the following Data Generating Process (DGP) and benchmark suite "
-            "based on your specifications and authored files. Please review:\n\n"
-            f"```R\n{extracted_code}\n```\n\n"
-            "🛑 **Action Required:**\n"
-            "Reply `/approve` to execute this benchmark, or reply with changes."
+            "## 🏛️ Agentic Council Deliberation\n\n"
+            f"### 🧠 Statistical Design (The Architect)\n{plan}\n\n"
+            f"### 🔍 Peer Review (The Critic)\n{critique}\n\n"
+            "### 💻 Proposed Implementation (The Developer)\n"
+            f"```R\n{code}\n```\n\n"
+            "---\n"
+            "🛑 **Action Required:** Reply `/approve` to merge this test suite into `tests/testthat/` and execute the simulation."
         )
         post_github_comment(repo, issue_number, github_token, reply_body)
         sys.exit(99)
