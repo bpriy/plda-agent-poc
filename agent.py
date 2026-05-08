@@ -109,9 +109,10 @@ def conduct_council(client, issue_body, system_knowledge):
         "1. Wrap the logic in: test_that('Simulation Sweep', { ... })\n"
         "2. Include 'set.seed(123)' and 'skip_on_cran()' inside the test block.\n"
         "3. Loop through the sensitivity sweep (mismatch = 0.1, 0.3, 0.5).\n"
-        "4. NO CHEATING: Do not pass the true mismatch rate to adjMixture(). Let the EM estimate it.\n"
-        "5. EXTRACT: Use broom::tidy() to extract estimates and standard errors.\n"
-        "6. OUTPUT: Use `knitr::kable(results, format = 'markdown')` to generate the table string, and save it to 'results.md' using writeLines(). Do NOT use xtable.\n"
+        "4. NO CHEATING: Do not pass m.rate to adjMixture(). Let the EM estimate it.\n"
+        "5. EXTRACT & STORE: Initialize an empty list 'results_list <- list()' before the loop. Inside the loop, extract results using 'tidy_model <- broom::tidy(model_fit)'. Add the mismatch rate: 'tidy_model$mismatch <- mismatch_rates[i]'. Store it: 'results_list[[i]] <- tidy_model'.\n"
+        "6. COMBINE: After the loop, do 'final_results <- do.call(rbind, results_list)'.\n"
+        "7. OUTPUT: Use `knitr::kable(final_results, format = 'markdown')` to generate the table string, and save it to 'results.md' using exactly: writeLines(table_string, 'results.md'). Do NOT use xtable or append arguments.\n"
         "Return ONLY valid R code in a ```R block."
     )
     code_response = generate_with_retry(client, developer_prompt + system_knowledge)
