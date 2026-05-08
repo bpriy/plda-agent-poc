@@ -1,0 +1,124 @@
+name: Agentic PLDA Pipeline
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  # ==========================================
+  # JOB 1: The Brain (Agent creates the script)
+  # ==========================================
+  agent-brain:
+    runs-on: ubuntu-latest
+    outputs:
+      exit_code: ${{ steps.run_agent.outputs.exit_code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install requests groq
+      - id: run_agent
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Exits with 0 if /approve, exits with 99 if drafting/revising
+        run: |
+          python agent.py || echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          if [ -z "${{ steps.run_agent.outputs.exit_code }}" ]; then echo "exit_code=0" >> "$GITHUB_OUTPUT"; fi
+          exit 0 
+
+      - name: Upload R Code
+        if: steps.run_agent.outputs.exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r-code
+          path: benchmarks/
+
+  # ==========================================
+  # JOB 2: The Sandbox (Run the R Script)
+  # ==========================================
+  execute-benchmark:
+    needs: agent-brain
+    if: needs.agent-brain.outputs.exit_code == '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r-code
+          path: benchmarks/
+      - uses: r-lib/actions/setup-r@v2
+      - name: Install Packages & Run Script
+        env:
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Rscript -e 'install.packages(c("dplyr", "broom", "knitr", "postlink", "MASS"))'
+          Rscript benchmarks/simulation_issue_${{ github.event.issue.number }}.R
+          
+      - name: Upload Results Table
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-results
+          path: results.md
+          if-no-files-found: error   # <--- ADD THIS LINE
+
+  # ==========================================
+  # JOB 3: The Reviewer (Agent writes analysis)
+  # ==========================================
+  analyze-results:
+    needs: execute-benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: simulation-results
+          path: ./
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install requests groq
+      - name: Run Analysis
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python agent.py --analyze
+        
+      - name: Upload PR Body
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-body
+          path: pr_body.md
+
+  # ==========================================
+  # JOB 4: The Publisher (Creates the PR)
+  # ==========================================
+  create-pr:
+    needs: analyze-results
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r-code
+          path: benchmarks/
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr-body
+          path: ./
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "📊 Added simulation script for Issue #${{ github.event.issue.number }}"
+          title: "🤖 Agentic Result: Issue #${{ github.event.issue.number }}"
+          body-path: pr_body.md
+          add-paths: |
+            benchmarks/simulation_issue_${{ github.event.issue.number }}.R
+          branch: "agent-results-${{ github.event.issue.number }}"
+          author: "${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>"
+          committer: "${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>"
+          assignees: "${{ github.actor }}"
