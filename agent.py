@@ -91,10 +91,12 @@ def conduct_council(client, issue_body, system_knowledge):
         "You are the Lead PhD Statistician. Design a rigorous simulation plan for this request:\n"
         f"ISSUE: {issue_body}\n\n"
         "REQUIREMENTS:\n"
-        "1. Identify the outcome type and select the appropriate GLM family (e.g., gaussian, binomial, poisson).\n"
-        "2. Define the Causal DAG (Covariates -> True Outcome -> Match Status -> Paradata).\n"
-        "3. Plan a Sensitivity Sweep: We must test mismatch rates of 0.1, 0.3, and 0.5 in a loop.\n"
-        "4. Define the outcome corruption (Random Swap within the mismatched subset).\n"
+        "REQUIREMENTS:\n"
+        "1. OBEY USER PARAMETERS: You MUST incorporate any specific distributions (e.g., Beta(8,2)), covariates, or formulas (e.g., ~ jw_score) explicitly requested in the issue.\n"
+        "2. Identify the outcome type and select the appropriate GLM family (e.g., gaussian, binomial, poisson).\n"
+        "3. Define the Causal DAG (Covariates -> True Outcome -> Match Status -> Paradata).\n"
+        "4. Plan a Sensitivity Sweep: We must test mismatch rates of 0.1, 0.3, and 0.5 in a loop.\n"
+        "5. Define the outcome corruption (Random Swap within the mismatched subset).\n"
         "Return ONLY the statistical design plan."
     )
     plan = generate_with_retry(client, architect_prompt + system_knowledge)
@@ -108,8 +110,8 @@ def conduct_council(client, issue_body, system_knowledge):
         "2. Include 'set.seed(123)' and 'skip_on_cran()' inside the test block.\n"
         "3. Loop through the sensitivity sweep (mismatch = 0.1, 0.3, 0.5).\n"
         "4. NO CHEATING: Do not pass the true mismatch rate to adjMixture(). Let the EM estimate it.\n"
-        "5. EXTRACT: Use broom::tidy() to easily extract point estimates and standard errors for all models across all loops.\n"
-        "6. OUTPUT: Save a single cohesive Markdown table comparing the models at different mismatch rates to 'results.md' using writeLines(). Do not put a 'collapse' argument inside writeLines.\n"
+        "5. EXTRACT: Use broom::tidy() to extract estimates and standard errors.\n"
+        "6. OUTPUT: Use `knitr::kable(results, format = 'markdown')` to generate the table string, and save it to 'results.md' using writeLines(). Do NOT use xtable.\n"
         "Return ONLY valid R code in a ```R block."
     )
     code_response = generate_with_retry(client, developer_prompt + system_knowledge)
@@ -124,9 +126,12 @@ def conduct_council(client, issue_body, system_knowledge):
             f"CODE:\n```R\n{code}\n```\n\n"
             "CHECK FOR FATAL FLAWS:\n"
             "1. DATA LEAKAGE: Is the true mismatch rate passed to the `m.rate` argument of adjMixture? (This is cheating).\n"
-            "2. CAUSALITY FAULT: Is 'jw_score' generated based on Disease_Status instead of Match_Status?\n"
+            "1. USER INTENT: Did the developer ignore specific distributions (e.g., Beta) or formulas explicitly requested in the plan?\n"
+            "2. CAUSALITY FAULT: Is 'jw_score' generated based on the outcome (Disease_Status) instead of Match_Status? (This is a fatal confounder).\n"
+            "3. FORMATTING: Is the table generated using knitr::kable? (xtable is strictly forbidden).\n"
             "3. SYNTAX: Is `writeLines` used correctly without a `collapse` argument inside the function call itself?\n"
             "4. COMPLETENESS: Does the script extract Standard Errors?\n"
+            "CHECK FOR FATAL FLAWS:\n"
             "If the code is flawless, reply exactly with 'PASSED'. Otherwise, list the specific errors."
         )
         critique = generate_with_retry(client, critic_prompt)
