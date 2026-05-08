@@ -1,0 +1,52 @@
+name: Benchmark Request
+description: Request an automated post-linkage simulation and benchmark.
+title: "[Benchmark]: "
+labels: ["benchmark", "agent-triggered"]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 1. Hypothesis / Scenario Description
+      description: What specific statistical edge case or linkage error scenario are you trying to test?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: dgp_setup
+    attributes:
+      label: 2. Data & Linkage Setup (DGP or Dataset)
+      description: |
+        Provide the parameters for the Data Generating Process OR paste your DGP R script OR reference an attached dataset (e.g., "Use the attached oracle.csv"). 
+      placeholder: "e.g., 'N=1000, 30% mismatch rate...' OR paste your R code here..."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: target_model
+    attributes:
+      label: 3. Target Scientific Model
+      description: What is the primary analysis model being fit to the data?
+      placeholder: "e.g., Logistic regression: Disease_Status ~ BMI + Age"
+    validations:
+      required: true
+
+  - type: textarea
+    id: adjustment_strategy
+    attributes:
+      label: 4. postlink Adjustment Strategy
+      description: |
+        Which postlink adjustment method(s) should the agent benchmark? Please provide the required metadata for that method:
+        - adjELE(): Provide blocking variables and audit sizes.
+        - adjMixture(): Provide paradata variables (e.g., Jaro-Winkler distances).
+        - adjMixBayes(): Provide any specific prior distributions.
+      placeholder: "e.g., Benchmark using adjMixture(). The paradata for string distance is stored in the 'jw_score' column."
+    validations:
+      required: true
+
+  - type: textarea
+    id: supplementary_files
+    attributes:
+      label: 5. Supplementary Material (Optional)
+      description: "Drag and drop any relevant PDFs, datasets (.csv), or R scripts (.R) here. The AI will ingest these to build your simulation."
+    validations:
+      required: false
