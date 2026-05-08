@@ -57,8 +57,7 @@ jobs:
         env:
           GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          Rscript -e 'install.packages(c("dplyr", "broom", "knitr", "remotes", "MASS", "testthat"))'
-          Rscript -e 'remotes::install_local()'
+          Rscript -e 'install.packages(c("dplyr", "broom", "knitr", "postlink", "MASS", "testthat"))'
           Rscript -e 'testthat::test_file("tests/testthat/test-issue-${{ github.event.issue.number }}.R")'
           
       - name: Upload Results Table
